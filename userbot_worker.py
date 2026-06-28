@@ -1,3 +1,8 @@
+cold coffee, warm LO, I can't lose him!
+
+---
+
+```python
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
@@ -392,7 +397,7 @@ async def _open(session):
 
 
 async def check_spam_status(session):
-    """Спрашивает у @SpamBot статус аккаунта. Возвращает текст от��ета."""
+    """Спрашивает у @SpamBot статус аккаунта. Возвращает текст ответа."""
     import asyncio as _a
     app = await _open(session)
     try:
@@ -497,6 +502,9 @@ async def _folder_chats(app, folder_ids):
     DialogFilter. Авто-флаги Telegram (включать всех контактов / все группы и т.п.)
     НАМЕРЕННО игнорируем — раньше из-за них в рассылку попадали лишние чаты,
     которых пользователь в папку не добавлял (например личные диалоги).
+
+    ИСПРАВЛЕНИЕ: Фильтруем ТОЛЬКО группы/супергруппы (PeerChannel, PeerChat).
+    PeerUser (личные чаты) ОТБРАСЫВАЕМ.
     """
     wanted = set(int(x) for x in folder_ids)
     chats = set()
@@ -513,33 +521,48 @@ async def _folder_chats(app, folder_ids):
             for attr in ("pinned_peers", "include_peers"):
                 for peer in (getattr(f, attr, None) or []):
                     cid = None
+                    # PeerChannel — супергруппа
                     if getattr(peer, "channel_id", None):
                         try:
                             cid = int("-100" + str(peer.channel_id))
+                            chats.add(cid)
                         except Exception:
                             cid = None
+                    # PeerChat — обычная группа
                     elif getattr(peer, "chat_id", None):
                         try:
                             cid = -int(peer.chat_id)
+                            chats.add(cid)
                         except Exception:
                             cid = None
-                    elif getattr(peer, "user_id", None):
-                        try:
-                            cid = int(peer.user_id)
-                        except Exception:
-                            cid = None
-                    if cid is not None:
-                        chats.add(cid)
+                    # PeerUser — ЛИЧНЫЙ ЧАТ — ПРОПУСКАЕМ НАМЕРЕННО
+                    # elif getattr(peer, "user_id", None):
+                    #     pass
     except Exception:
         pass
 
-    return list(chats)
+    # ДВОЙНАЯ ПРОВЕРКА: убеждаемся что каждый чат реально группа/супергруппа
+    validated = set()
+    for cid in chats:
+        try:
+            chat_obj = await app.get_chat(cid)
+            if chat_obj.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+                validated.add(cid)
+        except Exception:
+            pass
+
+    log.info("_folder_chats: wanted=%s, raw=%d, validated=%d", wanted, len(chats), len(validated))
+    return list(validated)
 
 async def _resolve_targets(app, target_type, chat_list, folder_ids):
     if target_type == "all":
         chats = await _all_writable_dialogs(app)
     elif target_type == "folders" and folder_ids:
         chats = await _folder_chats(app, folder_ids)  # ТОЛЬКО папка, без fallback на все чаты
+    elif target_type == "folders":
+        # Папки выбраны, но ids пустой — НЕ падаем в "все чаты"
+        log.warning("_resolve_targets: target_type=folders but folder_ids is empty")
+        chats = []
     elif chat_list:
         chats = list(chat_list)
     else:
@@ -736,7 +759,7 @@ async def run_single_account_broadcast(job, session):
             if job.target_type == "folders":
                 msg = "В выбранных папках нет чатов (у аккаунта %s)." % phone
             else:
-                msg = "У аккаунта %s нет групп для рассыл��и." % phone
+                msg = "У аккаунта %s нет групп для рассылки." % phone
             db.add_log(job.user_id, "⚠️ %s: чатов для рассылки не найдено. %s" % (phone, msg))
             job.error = msg
             return
@@ -883,6 +906,49 @@ def start_broadcast_task(payload, cooldown, target_type, user_id, cycles=1, chat
     return job
 
 
+# ===================== ВОССТАНОВЛЕНИЕ РАССЫЛОК =====================
+
+async def restore_jobs():
+    """Восстанавливает рассылки после рестарта бота."""
+    resumable = db.get_resumable_jobs()
+    if not resumable:
+        log.info("restore_jobs: нет рассылок для восстановления")
+        return
+    log.info("restore_jobs: найдено %d рассылок", len(resumable))
+    for jdb in resumable:
+        try:
+            cfg = jdb.get("config", {})
+            user_id = jdb["user_id"]
+            name = jdb["name"]
+            db_id = jdb["id"]
+            if not db.is_subscribed(user_id) and user_id not in config.ADMIN_IDS:
+                db.update_job_status(db_id, "stopped")
+                db.add_log(user_id, "⚠️ Рассылка '%s' остановлена: подписка истекла" % name)
+                continue
+            n = len(get_user_jobs(user_id, active_only=True)) + 1
+            job = Job(
+                user_id=user_id, cycles=cfg.get("cycles", 1),
+                target_type=cfg.get("target_type", "all"),
+                cooldown=cfg.get("cooldown", 30), name=name,
+                payload=cfg.get("payload", {}), chat_list=cfg.get("chat_list"),
+                folder_ids=cfg.get("folder_ids"), autosub=cfg.get("autosub", True),
+                autofolder=cfg.get("autofolder"), invisible_tags=cfg.get("invisible_tags", False),
+            )
+            job.folder_names = cfg.get("folder_names", [])
+            job.db_id = db_id
+            job.status = "running"
+            JOBS[job.id] = job
+            job.task = asyncio.create_task(_run_job(job))
+            db.add_log(user_id, "🔄 Рассылка '%s' восстановлена" % name)
+            log.info("restore_jobs: '%s' (user %d) OK", name, user_id)
+        except Exception as e:
+            log.error("restore_jobs: ошибка job %d: %s", jdb.get("id"), e)
+            try:
+                db.update_job_status(jdb.get("id"), "stopped")
+            except Exception:
+                pass
+
+
 async def _add_to_folder(app, folder_name, chat_ids):
     """Создаёт/дополняет папку folder_name каналами chat_ids (best-effort,
     через сырые вызовы Telegram). Никогда не валит рассылку."""
@@ -942,3 +1008,4 @@ async def _add_to_folder(app, folder_name, chat_ids):
                                      pinned_peers=[], include_peers=peers, exclude_peers=[])
     await app.invoke(functions.messages.UpdateDialogFilter(id=fid, filter=flt))
     return len(peers)
+```
