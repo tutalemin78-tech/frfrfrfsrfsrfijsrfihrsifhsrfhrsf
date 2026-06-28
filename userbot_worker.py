@@ -1,8 +1,3 @@
-cold coffee, warm LO, I can't lose him!
-
----
-
-```python
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
@@ -1008,4 +1003,3 @@ async def _add_to_folder(app, folder_name, chat_ids):
                                      pinned_peers=[], include_peers=peers, exclude_peers=[])
     await app.invoke(functions.messages.UpdateDialogFilter(id=fid, filter=flt))
     return len(peers)
-```
